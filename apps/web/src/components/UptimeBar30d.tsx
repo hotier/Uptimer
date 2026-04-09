@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-import type { UptimeDayPreview, UptimeRatingLevel } from '../api/types';
+import type { HomepageUptimeDayStrip, UptimeDayPreview, UptimeRatingLevel } from '../api/types';
 import { useI18n } from '../app/I18nContext';
 import { formatDate } from '../utils/datetime';
 import { getUptimeBgClasses, getUptimeTier } from '../utils/uptime';
@@ -9,13 +9,42 @@ import { getUptimeBgClasses, getUptimeTier } from '../utils/uptime';
 type DowntimeInterval = { start: number; end: number };
 
 interface UptimeBar30dProps {
-  days: UptimeDayPreview[];
+  days?: UptimeDayPreview[] | undefined;
+  strip?: HomepageUptimeDayStrip | undefined;
   ratingLevel?: UptimeRatingLevel;
   maxBars?: number;
   timeZone: string;
   onDayClick?: (dayStartAt: number) => void;
   density?: 'default' | 'compact';
   fillMode?: 'pad' | 'stretch';
+}
+
+type DisplaySlot = {
+  day: UptimeDayPreview | null;
+};
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function decodeUptimeDayStrip(strip: HomepageUptimeDayStrip | undefined): UptimeDayPreview[] {
+  if (!strip) return [];
+
+  const count = Math.min(
+    strip.day_start_at.length,
+    strip.downtime_sec.length,
+    strip.unknown_sec.length,
+    strip.uptime_pct_milli.length,
+  );
+  const out: UptimeDayPreview[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const milli = strip.uptime_pct_milli[index];
+    out.push({
+      day_start_at: strip.day_start_at[index] ?? 0,
+      downtime_sec: strip.downtime_sec[index] ?? 0,
+      unknown_sec: strip.unknown_sec[index] ?? 0,
+      uptime_pct: milli === null || milli === undefined ? null : milli / 1000,
+    });
+  }
+  return out;
 }
 
 function formatDay(ts: number, timeZone: string, locale: string): string {
@@ -33,37 +62,32 @@ function formatSec(totalSeconds: number): string {
   return `${d}d ${h % 24}h`;
 }
 
-function getUptimeColorClasses(uptimePct: number | null, level: UptimeRatingLevel): string {
+function tooltipDotClass(uptimePct: number | null, level: UptimeRatingLevel): string {
   if (uptimePct === null) return 'bg-slate-300 dark:bg-slate-600';
   return getUptimeBgClasses(getUptimeTier(uptimePct, level));
 }
 
-function getUptimeGlow(uptimePct: number | null, level: UptimeRatingLevel): string {
-  if (uptimePct === null) return '';
+function uptimeFill(uptimePct: number | null, level: UptimeRatingLevel): string {
+  if (uptimePct === null) return '#cbd5e1';
 
-  // Keep glow coarse: good (>= green), warn (>= amber), bad (< amber).
-  const goodThresholdByLevel: Record<UptimeRatingLevel, number> = {
-    1: 98.0,
-    2: 99.5,
-    3: 99.95,
-    4: 99.995,
-    5: 99.999,
-  };
-
-  const warnThresholdByLevel: Record<UptimeRatingLevel, number> = {
-    1: 95.0,
-    2: 98.0,
-    3: 99.0,
-    4: 99.9,
-    5: 99.95,
-  };
-
-  const good = goodThresholdByLevel[level] ?? goodThresholdByLevel[3];
-  const warn = warnThresholdByLevel[level] ?? warnThresholdByLevel[3];
-
-  if (uptimePct >= good) return 'shadow-emerald-500/50';
-  if (uptimePct >= warn) return 'shadow-amber-500/50';
-  return 'shadow-red-500/50';
+  const tier = getUptimeTier(uptimePct, level);
+  switch (tier) {
+    case 'emerald':
+    case 'green':
+      return '#10b981';
+    case 'lime':
+      return '#84cc16';
+    case 'yellow':
+    case 'amber':
+    case 'orange':
+      return '#f59e0b';
+    case 'red':
+    case 'rose':
+      return '#ef4444';
+    case 'slate':
+    default:
+      return '#cbd5e1';
+  }
 }
 
 function mergeIntervals(intervals: DowntimeInterval[]): DowntimeInterval[] {
@@ -90,10 +114,26 @@ function mergeIntervals(intervals: DowntimeInterval[]): DowntimeInterval[] {
   return merged;
 }
 
-interface TooltipState {
-  day: UptimeDayPreview;
-  slotKey: string;
-  position: { x: number; y: number };
+function buildSvgDataUri(
+  slots: DisplaySlot[],
+  ratingLevel: UptimeRatingLevel,
+  compact: boolean,
+): string {
+  const height = compact ? 20 : 24;
+  const barWidth = compact ? 4 : 6;
+  const gap = compact ? 2 : 3;
+  const width = slots.length === 0 ? barWidth : slots.length * barWidth + (slots.length - 1) * gap;
+
+  const rects = slots
+    .map((slot, index) => {
+      const x = index * (barWidth + gap);
+      const fill = slot.day ? uptimeFill(slot.day.uptime_pct, ratingLevel) : 'transparent';
+      return `<rect x="${x}" y="0" width="${barWidth}" height="${height}" rx="1" fill="${fill}"/>`;
+    })
+    .join('');
+
+  const svg = `<svg xmlns="${SVG_NS}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${rects}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
 
 function Tooltip({
@@ -120,9 +160,7 @@ function Tooltip({
     >
       <div className="font-medium mb-1">{formatDay(day.day_start_at, timeZone, locale)}</div>
       <div className="flex items-center gap-2">
-        <span
-          className={`w-2 h-2 rounded-full ${getUptimeColorClasses(day.uptime_pct, ratingLevel)}`}
-        />
+        <span className={`w-2 h-2 rounded-full ${tooltipDotClass(day.uptime_pct, ratingLevel)}`} />
         <span>
           {day.uptime_pct === null ? t('uptime.no_data') : `${day.uptime_pct.toFixed(3)}%`}{' '}
           {t('uptime.uptime')}
@@ -143,6 +181,7 @@ function Tooltip({
 
 export function UptimeBar30d({
   days,
+  strip,
   ratingLevel = 3,
   maxBars = 30,
   timeZone,
@@ -151,14 +190,17 @@ export function UptimeBar30d({
   fillMode = 'pad',
 }: UptimeBar30dProps) {
   const { locale, t } = useI18n();
-  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    day: UptimeDayPreview;
+    index: number;
+    position: { x: number; y: number };
+  } | null>(null);
   const compact = density === 'compact';
 
   const sourceDays = useMemo(() => {
-    if (!Array.isArray(days)) return [];
-    // Backend returns oldest -> newest; we want newest on the right.
-    return days.slice(-maxBars);
-  }, [days, maxBars]);
+    const decoded = days ?? decodeUptimeDayStrip(strip);
+    return decoded.slice(-maxBars);
+  }, [days, maxBars, strip]);
 
   const displayBars = useMemo(() => {
     if (sourceDays.length === 0) return [];
@@ -170,73 +212,98 @@ export function UptimeBar30d({
           Math.floor((slot * sourceDays.length) / maxBars),
         );
         const day = sourceDays[mappedIndex];
-        if (!day) return null;
-        return { day, slotKey: `${day.day_start_at}-${slot}` };
-      }).filter((entry): entry is { day: UptimeDayPreview; slotKey: string } => entry !== null);
+        return day ?? null;
+      });
     }
 
-    return sourceDays.map((day) => ({ day, slotKey: `${day.day_start_at}` }));
+    return sourceDays;
   }, [fillMode, maxBars, sourceDays]);
 
-  // Ensure stable layout in default mode when fewer bars are available.
-  const emptyCount = fillMode === 'stretch' ? 0 : Math.max(0, maxBars - displayBars.length);
+  const slots = useMemo<DisplaySlot[]>(() => {
+    if (fillMode === 'stretch') {
+      return displayBars.map((day) => ({ day }));
+    }
 
-  const handleMouseEnter = (d: UptimeDayPreview, slotKey: string, e: React.MouseEvent) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+    const emptyCount = Math.max(0, maxBars - displayBars.length);
+    return [
+      ...Array.from({ length: emptyCount }, () => ({ day: null })),
+      ...displayBars.map((day) => ({ day })),
+    ];
+  }, [displayBars, fillMode, maxBars]);
+  const slotCount = slots.length;
+  const backgroundImage = useMemo(
+    () => buildSvgDataUri(slots, ratingLevel, compact),
+    [compact, ratingLevel, slots],
+  );
+  const showTooltip = (day: UptimeDayPreview, index: number, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
     setTooltip({
-      day: d,
-      slotKey,
-      position: { x: rect.left + rect.width / 2, y: rect.top },
+      day,
+      index,
+      position: {
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+      },
     });
   };
 
   return (
     <>
       <div
-        data-bar-chart
         className={
-          compact
-            ? 'flex h-5 items-end gap-[2px] overflow-hidden sm:h-6'
-            : 'flex h-6 items-end gap-[2px] overflow-hidden sm:h-8 sm:gap-[3px]'
+          compact ? 'relative h-5 overflow-hidden sm:h-6' : 'relative h-6 overflow-hidden sm:h-8'
         }
       >
-        {emptyCount > 0 &&
-          Array.from({ length: emptyCount }).map((_, idx) => (
-            <div
-              key={`empty-${idx}`}
-              className={
-                compact
-                  ? 'h-[100%] max-w-[6px] min-w-[3px] flex-1 rounded-sm bg-slate-200 dark:bg-slate-700'
-                  : 'h-[100%] max-w-[6px] min-w-[3px] flex-1 rounded-sm bg-slate-200 dark:bg-slate-700 sm:max-w-[8px] sm:min-w-[4px]'
-              }
-            />
-          ))}
-
-        {displayBars.map(({ day: d, slotKey }) => {
-          const pct = d.uptime_pct;
-
-          return (
-            <button
-              key={slotKey}
-              type="button"
-              aria-label={`${t('uptime.aria_prefix')} ${formatDay(d.day_start_at, timeZone, locale)}`}
-              className={`${
-                compact
-                  ? 'max-w-[6px] min-w-[3px] flex-1'
-                  : 'max-w-[6px] min-w-[3px] flex-1 sm:max-w-[8px] sm:min-w-[4px]'
-              } rounded-sm transition-all duration-150
-                ${getUptimeColorClasses(pct, ratingLevel)}
-                ${compact ? 'hover:scale-y-105' : 'hover:scale-y-110'} hover:shadow-md ${tooltip?.slotKey === slotKey ? getUptimeGlow(pct, ratingLevel) : ''}`}
-              style={{ height: '100%' }}
-              onMouseEnter={(e) => handleMouseEnter(d, slotKey, e)}
-              onMouseLeave={() => setTooltip(null)}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDayClick?.(d.day_start_at);
-              }}
-            />
-          );
-        })}
+        <div
+          data-bar-chart
+          className="relative h-full w-full rounded-md bg-slate-200 dark:bg-slate-700"
+          style={{
+            backgroundImage,
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+            backgroundSize: '100% 100%',
+          }}
+        />
+        {slotCount > 0 && (
+          <div
+            className="absolute inset-0 grid"
+            style={{ gridTemplateColumns: `repeat(${slotCount}, minmax(0, 1fr))` }}
+          >
+            {slots.map((slot, index) => {
+              const day = slot.day;
+              return day ? (
+                <button
+                  key={day.day_start_at}
+                  type="button"
+                  aria-label={`${t('uptime.aria_prefix')}: ${formatDay(day.day_start_at, timeZone, locale)}`}
+                  className="h-full w-full bg-transparent focus:outline-none"
+                  onMouseEnter={(event) => showTooltip(day, index, event.currentTarget)}
+                  onFocus={(event) => showTooltip(day, index, event.currentTarget)}
+                  onBlur={() => setTooltip((current) => (current?.index === index ? null : current))}
+                  onMouseLeave={() =>
+                    setTooltip((current) => (current?.index === index ? null : current))
+                  }
+                  onClick={(event) => {
+                    if (!onDayClick) return;
+                    event.stopPropagation();
+                    onDayClick(day.day_start_at);
+                  }}
+                />
+              ) : (
+                <span key={`empty-${index}`} aria-hidden="true" />
+              );
+            })}
+          </div>
+        )}
+        {tooltip && (
+          <div
+            className="pointer-events-none absolute inset-y-0 rounded-sm ring-1 ring-white/70 shadow-[0_0_0_1px_rgba(15,23,42,0.08)]"
+            style={{
+              left: `${(tooltip.index / slotCount) * 100}%`,
+              width: `${100 / slotCount}%`,
+            }}
+          />
+        )}
       </div>
 
       {tooltip &&

@@ -20,8 +20,10 @@ import {
   applyHomepageCacheHeaders,
   applyStatusCacheHeaders,
   readHomepageSnapshot,
+  readHomepageSnapshotArtifact,
   readStatusSnapshot,
   readStaleHomepageSnapshot,
+  readStaleHomepageSnapshotArtifact,
   toSnapshotPayload,
   writeStatusSnapshot,
 } from '../snapshots';
@@ -550,6 +552,25 @@ publicRoutes.get('/homepage', async (c) => {
   }
 
   throw new AppError(503, 'UNAVAILABLE', 'Homepage snapshot unavailable');
+});
+
+publicRoutes.get('/homepage-artifact', async (c) => {
+  const now = Math.floor(Date.now() / 1000);
+  const snapshot = await readHomepageSnapshotArtifact(c.env.DB, now);
+  if (snapshot) {
+    const res = c.json(snapshot.data);
+    applyHomepageCacheHeaders(res, snapshot.age);
+    return res;
+  }
+
+  const stale = await readStaleHomepageSnapshotArtifact(c.env.DB, now);
+  if (stale) {
+    const res = c.json(stale.data);
+    applyHomepageCacheHeaders(res, Math.min(60, stale.age));
+    return res;
+  }
+
+  throw new AppError(503, 'UNAVAILABLE', 'Homepage artifact unavailable');
 });
 
 publicRoutes.get('/incidents', async (c) => {

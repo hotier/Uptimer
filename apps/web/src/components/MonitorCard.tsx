@@ -1,6 +1,11 @@
 import { useMemo } from 'react';
 
-import type { HomepageMonitorCard, PublicMonitor, UptimeRatingLevel } from '../api/types';
+import type {
+  HomepageHeartbeatStrip,
+  HomepageMonitorCard,
+  PublicMonitor,
+  UptimeRatingLevel,
+} from '../api/types';
 import { useI18n } from '../app/I18nContext';
 import { statusLabel } from '../i18n/labels';
 import { HeartbeatBar } from './HeartbeatBar';
@@ -18,18 +23,46 @@ import {
 const HEARTBEAT_BARS = 60;
 const AVAILABILITY_BARS = 60;
 
+type PublicMonitorLike = Pick<
+  PublicMonitor,
+  'id' | 'name' | 'type' | 'status' | 'is_stale' | 'last_checked_at' | 'heartbeats' | 'uptime_30d' | 'uptime_days'
+>;
+
+type HomepageMonitorLike = Pick<
+  HomepageMonitorCard,
+  | 'id'
+  | 'name'
+  | 'type'
+  | 'status'
+  | 'is_stale'
+  | 'last_checked_at'
+  | 'heartbeat_strip'
+  | 'uptime_30d'
+  | 'uptime_day_strip'
+>;
+
+type MonitorLike = PublicMonitorLike | HomepageMonitorLike;
+
 export interface MonitorCardProps {
-  monitor: Pick<
-    PublicMonitor | HomepageMonitorCard,
-    'id' | 'name' | 'type' | 'status' | 'is_stale' | 'last_checked_at' | 'heartbeats' | 'uptime_30d' | 'uptime_days'
-  >;
+  monitor: MonitorLike;
   ratingLevel: UptimeRatingLevel;
   timeZone: string;
   onSelect: () => void;
   onDayClick: (dayStartAt: number) => void;
 }
 
-function getHeartbeatLatencyStats(heartbeats: PublicMonitor['heartbeats']): {
+function hasHomepageStrips(monitor: MonitorLike): monitor is HomepageMonitorLike {
+  return 'heartbeat_strip' in monitor && 'uptime_day_strip' in monitor;
+}
+
+function hasPublicTimeseries(monitor: MonitorLike): monitor is PublicMonitorLike {
+  return 'heartbeats' in monitor && 'uptime_days' in monitor;
+}
+
+function getHeartbeatLatencyStats(
+  heartbeats: PublicMonitor['heartbeats'] | undefined,
+  heartbeatStrip: HomepageHeartbeatStrip | undefined,
+): {
   fastestMs: number | null;
   avgMs: number | null;
   slowestMs: number | null;
@@ -39,15 +72,28 @@ function getHeartbeatLatencyStats(heartbeats: PublicMonitor['heartbeats']): {
   let latencySum = 0;
   let latencyCount = 0;
 
-  for (const hb of heartbeats) {
-    if (hb.status !== 'up') continue;
-    if (typeof hb.latency_ms !== 'number' || !Number.isFinite(hb.latency_ms)) continue;
+  if (Array.isArray(heartbeats)) {
+    for (const hb of heartbeats) {
+      if (hb.status !== 'up') continue;
+      if (typeof hb.latency_ms !== 'number' || !Number.isFinite(hb.latency_ms)) continue;
 
-    const latency = hb.latency_ms;
-    if (latency < fastestMs) fastestMs = latency;
-    if (latency > slowestMs) slowestMs = latency;
-    latencySum += latency;
-    latencyCount++;
+      const latency = hb.latency_ms;
+      if (latency < fastestMs) fastestMs = latency;
+      if (latency > slowestMs) slowestMs = latency;
+      latencySum += latency;
+      latencyCount++;
+    }
+  } else if (heartbeatStrip) {
+    for (let index = 0; index < heartbeatStrip.status_codes.length; index += 1) {
+      if (heartbeatStrip.status_codes[index] !== 'u') continue;
+      const latency = heartbeatStrip.latency_ms[index];
+      if (typeof latency !== 'number' || !Number.isFinite(latency)) continue;
+
+      if (latency < fastestMs) fastestMs = latency;
+      if (latency > slowestMs) slowestMs = latency;
+      latencySum += latency;
+      latencyCount++;
+    }
   }
 
   if (latencyCount === 0) {
@@ -73,9 +119,13 @@ export function MonitorCard({
       ? formatTime(monitor.last_checked_at, { timeZone, locale })
       : formatTime(monitor.last_checked_at, { locale })
     : t('monitor_card.never_checked');
+  const heartbeatStrip = hasHomepageStrips(monitor) ? monitor.heartbeat_strip : undefined;
+  const uptimeDayStrip = hasHomepageStrips(monitor) ? monitor.uptime_day_strip : undefined;
+  const heartbeats = hasPublicTimeseries(monitor) ? monitor.heartbeats : undefined;
+  const uptimeDays = hasPublicTimeseries(monitor) ? monitor.uptime_days : undefined;
   const latencyStats = useMemo(
-    () => getHeartbeatLatencyStats(monitor.heartbeats ?? []),
-    [monitor.heartbeats],
+    () => getHeartbeatLatencyStats(heartbeats, heartbeatStrip),
+    [heartbeatStrip, heartbeats],
   );
 
   const tier = uptime30d ? getUptimeTier(uptime30d.uptime_pct, ratingLevel) : null;
@@ -123,7 +173,8 @@ export function MonitorCard({
           {t('monitor_card.availability_30d')}
         </div>
         <UptimeBar30d
-          days={monitor.uptime_days}
+          days={uptimeDays}
+          strip={uptimeDayStrip}
           ratingLevel={ratingLevel}
           maxBars={AVAILABILITY_BARS}
           timeZone={timeZone}
@@ -138,7 +189,8 @@ export function MonitorCard({
           {t('monitor_card.last_checks', { count: HEARTBEAT_BARS })}
         </div>
         <HeartbeatBar
-          heartbeats={monitor.heartbeats ?? []}
+          heartbeats={heartbeats}
+          strip={heartbeatStrip}
           maxBars={HEARTBEAT_BARS}
           density="compact"
         />

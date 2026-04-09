@@ -26,6 +26,22 @@ const PREVIEW_BATCH_LIMIT = 50;
 type IncidentSummary = PublicHomepageResponse['active_incidents'][number];
 type MaintenancePreview = NonNullable<PublicHomepageResponse['maintenance_history_preview']>;
 
+function toHeartbeatStatusCode(
+  status: Awaited<ReturnType<typeof buildPublicMonitorCards>>['monitors'][number]['heartbeats'][number]['status'],
+): string {
+  switch (status) {
+    case 'up':
+      return 'u';
+    case 'down':
+      return 'd';
+    case 'maintenance':
+      return 'm';
+    case 'unknown':
+    default:
+      return 'x';
+  }
+}
+
 function toIncidentSummary(row: IncidentRow): IncidentSummary {
   return {
     id: row.id,
@@ -52,6 +68,57 @@ function toMaintenancePreview(
   };
 }
 
+function toHomepageHeartbeatStrip(
+  heartbeats: Awaited<ReturnType<typeof buildPublicMonitorCards>>['monitors'][number]['heartbeats'],
+): PublicHomepageResponse['monitors'][number]['heartbeat_strip'] {
+  const count = heartbeats.length;
+  const checkedAt = new Array<number>(count);
+  const latencyMs = new Array<number | null>(count);
+  let statusCodes = '';
+
+  for (let index = 0; index < count; index += 1) {
+    const heartbeat = heartbeats[index];
+    if (!heartbeat) continue;
+
+    checkedAt[index] = heartbeat.checked_at;
+    latencyMs[index] = heartbeat.latency_ms;
+    statusCodes += toHeartbeatStatusCode(heartbeat.status);
+  }
+
+  return {
+    checked_at: checkedAt,
+    status_codes: statusCodes,
+    latency_ms: latencyMs,
+  };
+}
+
+function toHomepageUptimeDayStrip(
+  days: Awaited<ReturnType<typeof buildPublicMonitorCards>>['monitors'][number]['uptime_days'],
+): PublicHomepageResponse['monitors'][number]['uptime_day_strip'] {
+  const count = days.length;
+  const dayStartAt = new Array<number>(count);
+  const downtimeSec = new Array<number>(count);
+  const unknownSec = new Array<number>(count);
+  const uptimePctMilli = new Array<number | null>(count);
+
+  for (let index = 0; index < count; index += 1) {
+    const day = days[index];
+    if (!day) continue;
+
+    dayStartAt[index] = day.day_start_at;
+    downtimeSec[index] = day.downtime_sec;
+    unknownSec[index] = day.unknown_sec;
+    uptimePctMilli[index] = day.uptime_pct === null ? null : Math.round(day.uptime_pct * 1000);
+  }
+
+  return {
+    day_start_at: dayStartAt,
+    downtime_sec: downtimeSec,
+    unknown_sec: unknownSec,
+    uptime_pct_milli: uptimePctMilli,
+  };
+}
+
 function toHomepageMonitorCard(
   monitor: Awaited<ReturnType<typeof buildPublicMonitorCards>>['monitors'][number],
 ): PublicHomepageResponse['monitors'][number] {
@@ -63,18 +130,13 @@ function toHomepageMonitorCard(
     status: monitor.status,
     is_stale: monitor.is_stale,
     last_checked_at: monitor.last_checked_at,
-    heartbeats: monitor.heartbeats,
+    heartbeat_strip: toHomepageHeartbeatStrip(monitor.heartbeats),
     uptime_30d: monitor.uptime_30d
       ? {
           uptime_pct: monitor.uptime_30d.uptime_pct,
         }
       : null,
-    uptime_days: monitor.uptime_days.map((day) => ({
-      day_start_at: day.day_start_at,
-      downtime_sec: day.downtime_sec,
-      unknown_sec: day.unknown_sec,
-      uptime_pct: day.uptime_pct,
-    })),
+    uptime_day_strip: toHomepageUptimeDayStrip(monitor.uptime_days),
   };
 }
 
@@ -247,8 +309,40 @@ export async function computePublicHomepagePayload(
     findLatestVisibleHistoricalMaintenanceWindow(db, now, includeHiddenMonitors),
   ]);
 
+  const monitors = new Array<PublicHomepageResponse['monitors'][number]>(monitorData.monitors.length);
+  for (let index = 0; index < monitorData.monitors.length; index += 1) {
+    const monitor = monitorData.monitors[index];
+    if (!monitor) continue;
+    monitors[index] = toHomepageMonitorCard(monitor);
+  }
+
+  const activeIncidentSummaries = new Array<IncidentSummary>(activeIncidents.length);
+  for (let index = 0; index < activeIncidents.length; index += 1) {
+    const incident = activeIncidents[index];
+    if (!incident) continue;
+    activeIncidentSummaries[index] = toIncidentSummary(incident.row);
+  }
+
+  const activeMaintenancePreview = new Array<MaintenancePreview>(maintenanceWindows.active.length);
+  for (let index = 0; index < maintenanceWindows.active.length; index += 1) {
+    const window = maintenanceWindows.active[index];
+    if (!window) continue;
+    activeMaintenancePreview[index] = toMaintenancePreview(window.row, window.monitorIds);
+  }
+
+  const upcomingMaintenancePreview = new Array<MaintenancePreview>(
+    maintenanceWindows.upcoming.length,
+  );
+  for (let index = 0; index < maintenanceWindows.upcoming.length; index += 1) {
+    const window = maintenanceWindows.upcoming[index];
+    if (!window) continue;
+    upcomingMaintenancePreview[index] = toMaintenancePreview(window.row, window.monitorIds);
+  }
+
   return {
     generated_at: now,
+    bootstrap_mode: 'full',
+    monitor_count_total: monitorData.monitors.length,
     site_title: settings.site_title,
     site_description: settings.site_description,
     site_locale: settings.site_locale,
@@ -262,15 +356,11 @@ export async function computePublicHomepagePayload(
       activeMaintenanceWindows: maintenanceWindows.active,
     }),
     summary: monitorData.summary,
-    monitors: monitorData.monitors.map(toHomepageMonitorCard),
-    active_incidents: activeIncidents.map(({ row }) => toIncidentSummary(row)),
+    monitors,
+    active_incidents: activeIncidentSummaries,
     maintenance_windows: {
-      active: maintenanceWindows.active.map(({ row, monitorIds }) =>
-        toMaintenancePreview(row, monitorIds),
-      ),
-      upcoming: maintenanceWindows.upcoming.map(({ row, monitorIds }) =>
-        toMaintenancePreview(row, monitorIds),
-      ),
+      active: activeMaintenancePreview,
+      upcoming: upcomingMaintenancePreview,
     },
     resolved_incident_preview: resolvedIncidentPreview
       ? toIncidentSummary(resolvedIncidentPreview)

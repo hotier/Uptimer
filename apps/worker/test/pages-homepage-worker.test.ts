@@ -94,31 +94,19 @@ describe('pages homepage worker', () => {
     expect(await res.text()).toContain('fallback homepage');
   });
 
-  it('injects homepage bootstrap data and updates both html caches on success', async () => {
+  it('injects the precomputed homepage artifact and updates both html caches on success', async () => {
     const { put } = installDefaultCacheMock(() => undefined);
     const env = makeEnv();
     globalThis.fetch = vi.fn(async () =>
       new Response(
         JSON.stringify({
           generated_at: 1_728_000_000,
-          site_title: 'Status Hub',
-          site_description: 'Production',
-          site_locale: 'auto',
-          site_timezone: 'UTC',
-          uptime_rating_level: 3,
-          overall_status: 'up',
-          banner: {
-            source: 'monitors',
-            status: 'operational',
-            title: 'All Systems Operational',
-            down_ratio: null,
-          },
-          summary: { up: 1, down: 0, maintenance: 0, paused: 0, unknown: 0 },
-          monitors: [],
-          active_incidents: [],
-          maintenance_windows: { active: [], upcoming: [] },
-          resolved_incident_preview: null,
-          maintenance_history_preview: null,
+          style_tag: '<style id="uptimer-preload-style">body{}</style>',
+          preload_html: '<div id="uptimer-preload"><main>artifact preload</main></div>',
+          bootstrap_script:
+            '<script>globalThis.__UPTIMER_INITIAL_HOMEPAGE__={"site_title":"Status Hub"};</script>',
+          meta_title: 'Status Hub',
+          meta_description: 'Production',
         }),
         { status: 200 },
       ),
@@ -135,6 +123,7 @@ describe('pages homepage worker', () => {
     const html = await res.text();
     expect(html).toContain('__UPTIMER_INITIAL_HOMEPAGE__');
     expect(html).not.toContain('__UPTIMER_INITIAL_STATUS__');
+    expect(html).toContain('artifact preload');
     expect(put).toHaveBeenCalledTimes(2);
   });
 });

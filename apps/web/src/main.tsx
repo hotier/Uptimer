@@ -24,6 +24,20 @@ type PersistedHomepageCache = {
   value: PublicHomepageResponse;
 };
 
+function toHeartbeatStatusCode(status: StatusResponse['monitors'][number]['heartbeats'][number]['status']) {
+  switch (status) {
+    case 'up':
+      return 'u';
+    case 'down':
+      return 'd';
+    case 'maintenance':
+      return 'm';
+    case 'unknown':
+    default:
+      return 'x';
+  }
+}
+
 function readPersistedHomepageCache(): PublicHomepageResponse | null {
   try {
     const raw = localStorage.getItem(LS_PUBLIC_HOMEPAGE_KEY);
@@ -34,6 +48,7 @@ function readPersistedHomepageCache(): PublicHomepageResponse | null {
     const value = (parsed as { value?: unknown }).value;
     if (!value || typeof value !== 'object') return null;
     if (typeof (value as { generated_at?: unknown }).generated_at !== 'number') return null;
+    if ((value as { bootstrap_mode?: unknown }).bootstrap_mode === 'partial') return null;
 
     return value as PublicHomepageResponse;
   } catch {
@@ -61,6 +76,8 @@ function readPersistedStatusCache(): StatusResponse | null {
 }
 
 function writePersistedHomepageCache(value: PublicHomepageResponse): void {
+  if (value.bootstrap_mode === 'partial') return;
+
   try {
     const payload: PersistedHomepageCache = { at: Date.now(), value };
     localStorage.setItem(LS_PUBLIC_HOMEPAGE_KEY, JSON.stringify(payload));
@@ -72,6 +89,8 @@ function writePersistedHomepageCache(value: PublicHomepageResponse): void {
 function homepageFromStatus(status: StatusResponse): PublicHomepageResponse {
   return {
     generated_at: status.generated_at,
+    bootstrap_mode: 'full',
+    monitor_count_total: status.monitors.length,
     site_title: status.site_title,
     site_description: status.site_description,
     site_locale: status.site_locale,
@@ -88,14 +107,22 @@ function homepageFromStatus(status: StatusResponse): PublicHomepageResponse {
       status: monitor.status,
       is_stale: monitor.is_stale,
       last_checked_at: monitor.last_checked_at,
-      heartbeats: monitor.heartbeats,
+      heartbeat_strip: {
+        checked_at: monitor.heartbeats.map((heartbeat) => heartbeat.checked_at),
+        status_codes: monitor.heartbeats
+          .map((heartbeat) => toHeartbeatStatusCode(heartbeat.status))
+          .join(''),
+        latency_ms: monitor.heartbeats.map((heartbeat) => heartbeat.latency_ms),
+      },
       uptime_30d: monitor.uptime_30d ? { uptime_pct: monitor.uptime_30d.uptime_pct } : null,
-      uptime_days: monitor.uptime_days.map((day) => ({
-        day_start_at: day.day_start_at,
-        downtime_sec: day.downtime_sec,
-        unknown_sec: day.unknown_sec,
-        uptime_pct: day.uptime_pct,
-      })),
+      uptime_day_strip: {
+        day_start_at: monitor.uptime_days.map((day) => day.day_start_at),
+        downtime_sec: monitor.uptime_days.map((day) => day.downtime_sec),
+        unknown_sec: monitor.uptime_days.map((day) => day.unknown_sec),
+        uptime_pct_milli: monitor.uptime_days.map((day) =>
+          day.uptime_pct === null ? null : Math.round(day.uptime_pct * 1000),
+        ),
+      },
     })),
     active_incidents: status.active_incidents.map((incident) => ({
       id: incident.id,
@@ -143,7 +170,11 @@ const seedHomepage = initialHomepage ?? persistedHomepage;
 
 if (seedHomepage) {
   const updatedAt =
-    typeof seedHomepage.generated_at === 'number' ? seedHomepage.generated_at * 1000 : Date.now();
+    seedHomepage.bootstrap_mode === 'partial'
+      ? 0
+      : typeof seedHomepage.generated_at === 'number'
+        ? seedHomepage.generated_at * 1000
+        : Date.now();
 
   queryClient.setQueryData<PublicHomepageResponse>(['homepage'], seedHomepage, { updatedAt });
   writePersistedHomepageCache(seedHomepage);

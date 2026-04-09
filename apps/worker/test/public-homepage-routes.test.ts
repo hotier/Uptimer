@@ -43,9 +43,29 @@ async function requestHomepage(handlers: FakeD1QueryHandler[]) {
   );
 }
 
+async function requestHomepageArtifact(handlers: FakeD1QueryHandler[]) {
+  const env = {
+    DB: createFakeD1Database(handlers),
+    ADMIN_TOKEN: 'test-admin-token',
+  } as unknown as Env;
+
+  const app = new Hono<{ Bindings: Env }>();
+  app.onError(handleError);
+  app.notFound(handleNotFound);
+  app.route('/api/v1/public', publicRoutes);
+
+  return app.fetch(
+    new Request('https://status.example.com/api/v1/public/homepage-artifact'),
+    env,
+    { waitUntil: vi.fn() } as unknown as ExecutionContext,
+  );
+}
+
 function samplePayload(now = 1_728_000_000) {
   return {
     generated_at: now,
+    bootstrap_mode: 'full',
+    monitor_count_total: 0,
     site_title: 'Uptimer',
     site_description: '',
     site_locale: 'auto',
@@ -97,6 +117,18 @@ describe('public homepage route', () => {
 
   it('serves a fresh homepage snapshot without live compute', async () => {
     const payload = samplePayload(190);
+    const stored = {
+      version: 2,
+      data: payload,
+      render: {
+        generated_at: payload.generated_at,
+        style_tag: '<style id="uptimer-preload-style"></style>',
+        preload_html: '<div id="uptimer-preload">hello</div>',
+        bootstrap_script: '<script>globalThis.__UPTIMER_INITIAL_HOMEPAGE__={};</script>',
+        meta_title: 'Uptimer',
+        meta_description: 'All Systems Operational',
+      },
+    };
     vi.spyOn(Date, 'now').mockReturnValue(200_000);
 
     const res = await requestHomepage([
@@ -104,13 +136,43 @@ describe('public homepage route', () => {
         match: 'from public_snapshots',
         first: () => ({
           generated_at: payload.generated_at,
-          body_json: JSON.stringify(payload),
+          body_json: JSON.stringify(stored),
         }),
       },
     ]);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(payload);
+  });
+
+  it('serves homepage render artifacts from the same snapshot row', async () => {
+    const payload = samplePayload(190);
+    const render = {
+      generated_at: payload.generated_at,
+      style_tag: '<style id="uptimer-preload-style"></style>',
+      preload_html: '<div id="uptimer-preload">hello</div>',
+      bootstrap_script: '<script>globalThis.__UPTIMER_INITIAL_HOMEPAGE__={};</script>',
+      meta_title: 'Uptimer',
+      meta_description: 'All Systems Operational',
+    };
+    vi.spyOn(Date, 'now').mockReturnValue(200_000);
+
+    const res = await requestHomepageArtifact([
+      {
+        match: 'from public_snapshots',
+        first: () => ({
+          generated_at: payload.generated_at,
+          body_json: JSON.stringify({
+            version: 2,
+            data: payload,
+            render,
+          }),
+        }),
+      },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(render);
   });
 
   it('serves a bounded stale homepage snapshot instead of computing in-request', async () => {

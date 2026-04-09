@@ -6,6 +6,7 @@ export type MonitorType = 'http' | 'tcp';
 export type HttpResponseMatchMode = 'contains' | 'regex';
 export type SupportedLocale = 'en' | 'zh-CN' | 'zh-TW' | 'ja' | 'es';
 export type LocaleSetting = 'auto' | SupportedLocale;
+export type HomepageBootstrapMode = 'full' | 'partial';
 
 export type IncidentStatus = 'investigating' | 'identified' | 'monitoring' | 'resolved';
 export type IncidentImpact = 'none' | 'minor' | 'major' | 'critical';
@@ -88,6 +89,19 @@ export interface UptimeSummaryPreview {
   uptime_pct: number;
 }
 
+export interface HomepageHeartbeatStrip {
+  checked_at: number[];
+  status_codes: string;
+  latency_ms: Array<number | null>;
+}
+
+export interface HomepageUptimeDayStrip {
+  day_start_at: number[];
+  downtime_sec: number[];
+  unknown_sec: number[];
+  uptime_pct_milli: Array<number | null>;
+}
+
 export interface PublicMonitor {
   id: number;
   name: string;
@@ -165,13 +179,15 @@ export interface HomepageMonitorCard {
   status: MonitorStatus;
   is_stale: boolean;
   last_checked_at: number | null;
-  heartbeats: Heartbeat[];
+  heartbeat_strip: HomepageHeartbeatStrip;
   uptime_30d: UptimeSummaryPreview | null;
-  uptime_days: UptimeDayPreview[];
+  uptime_day_strip: HomepageUptimeDayStrip;
 }
 
 export interface PublicHomepageResponse {
   generated_at: number;
+  bootstrap_mode: HomepageBootstrapMode;
+  monitor_count_total: number;
   site_title: string;
   site_description: string;
   site_locale: LocaleSetting;

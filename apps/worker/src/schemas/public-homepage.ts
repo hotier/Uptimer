@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 const monitorStatusSchema = z.enum(['up', 'down', 'maintenance', 'paused', 'unknown']);
-const checkStatusSchema = z.enum(['up', 'down', 'maintenance', 'unknown']);
 const uptimeRatingLevelSchema = z.number().int().min(1).max(5);
 const incidentStatusSchema = z.enum(['investigating', 'identified', 'monitoring', 'resolved']);
 const incidentImpactSchema = z.enum(['none', 'minor', 'major', 'critical']);
@@ -41,21 +40,21 @@ const bannerSchema = z.discriminatedUnion('source', [
   }),
 ]);
 
-const heartbeatSchema = z.object({
-  checked_at: z.number().int().nonnegative(),
-  status: checkStatusSchema,
-  latency_ms: z.number().int().nonnegative().nullable(),
-});
-
 const uptimeSummaryPreviewSchema = z.object({
   uptime_pct: z.number().min(0).max(100),
 });
 
-const uptimeDayPreviewSchema = z.object({
-  day_start_at: z.number().int().nonnegative(),
-  downtime_sec: z.number().int().nonnegative(),
-  unknown_sec: z.number().int().nonnegative(),
-  uptime_pct: z.number().min(0).max(100).nullable(),
+const homepageHeartbeatStripSchema = z.object({
+  checked_at: z.array(z.number().int().nonnegative()),
+  status_codes: z.string().regex(/^[udmx]*$/),
+  latency_ms: z.array(z.number().int().nonnegative().nullable()),
+});
+
+const homepageUptimeDayStripSchema = z.object({
+  day_start_at: z.array(z.number().int().nonnegative()),
+  downtime_sec: z.array(z.number().int().nonnegative()),
+  unknown_sec: z.array(z.number().int().nonnegative()),
+  uptime_pct_milli: z.array(z.number().int().min(0).max(100_000).nullable()),
 });
 
 export const homepageMonitorCardSchema = z.object({
@@ -66,9 +65,9 @@ export const homepageMonitorCardSchema = z.object({
   status: monitorStatusSchema,
   is_stale: z.boolean(),
   last_checked_at: z.number().int().nonnegative().nullable(),
-  heartbeats: z.array(heartbeatSchema),
+  heartbeat_strip: homepageHeartbeatStripSchema,
   uptime_30d: uptimeSummaryPreviewSchema.nullable(),
-  uptime_days: z.array(uptimeDayPreviewSchema),
+  uptime_day_strip: homepageUptimeDayStripSchema,
 });
 
 const incidentSummarySchema = z.object({
@@ -92,6 +91,8 @@ const maintenanceWindowPreviewSchema = z.object({
 
 export const publicHomepageResponseSchema = z.object({
   generated_at: z.number().int().nonnegative(),
+  bootstrap_mode: z.enum(['full', 'partial']).default('full'),
+  monitor_count_total: z.number().int().nonnegative(),
   site_title: z.string().default('Uptimer'),
   site_description: z.string().default(''),
   site_locale: z.enum(['auto', 'en', 'zh-CN', 'zh-TW', 'ja', 'es']).default('auto'),
