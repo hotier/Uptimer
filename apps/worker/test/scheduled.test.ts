@@ -15,13 +15,21 @@ vi.mock('../src/settings', () => ({
 vi.mock('../src/notify/webhook', () => ({
   dispatchWebhookToChannels: vi.fn(),
 }));
+vi.mock('../src/public/homepage', () => ({
+  computePublicHomepagePayload: vi.fn(),
+}));
+vi.mock('../src/snapshots', () => ({
+  refreshPublicHomepageSnapshotIfNeeded: vi.fn(),
+}));
 
 import type { Env } from '../src/env';
 import { runHttpCheck } from '../src/monitor/http';
 import { runTcpCheck } from '../src/monitor/tcp';
 import { dispatchWebhookToChannels } from '../src/notify/webhook';
+import { computePublicHomepagePayload } from '../src/public/homepage';
 import { runScheduledTick } from '../src/scheduler/scheduled';
 import { acquireLease } from '../src/scheduler/lock';
+import { refreshPublicHomepageSnapshotIfNeeded } from '../src/snapshots';
 import { readSettings } from '../src/settings';
 import { createFakeD1Database, type FakeD1QueryHandler } from './helpers/fake-d1';
 
@@ -129,6 +137,10 @@ describe('scheduler/scheduled regression', () => {
       uptime_rating_level: 3,
     });
     vi.mocked(dispatchWebhookToChannels).mockResolvedValue(undefined);
+    vi.mocked(computePublicHomepagePayload).mockResolvedValue({
+      generated_at: Math.floor(Date.now() / 1000),
+    } as never);
+    vi.mocked(refreshPublicHomepageSnapshotIfNeeded).mockResolvedValue(false);
     vi.mocked(runHttpCheck).mockResolvedValue({
       status: 'up',
       latencyMs: 21,
@@ -171,7 +183,12 @@ describe('scheduler/scheduled regression', () => {
 
     expect(acquireLease).toHaveBeenCalledWith(env.DB, 'scheduler:tick', expectedNow, 55);
     expect(readSettings).toHaveBeenCalledTimes(1);
-    expect(waitUntil).not.toHaveBeenCalled();
+    expect(refreshPublicHomepageSnapshotIfNeeded).toHaveBeenCalledWith({
+      db: env.DB,
+      now: expectedNow,
+      compute: expect.any(Function),
+    });
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
   it('processes due HTTP monitors and writes check/state rows', async () => {
@@ -240,7 +257,8 @@ describe('scheduler/scheduled regression', () => {
     expect(runArgs[stateUpsertIndex]?.[1]).toBe('up');
     expect(runArgs[stateUpsertIndex]?.[2]).toBe(expectedCheckedAt);
 
-    expect(waitUntil).not.toHaveBeenCalled();
+    expect(refreshPublicHomepageSnapshotIfNeeded).toHaveBeenCalledTimes(1);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
   it('batches persistence for multiple due monitors', async () => {
@@ -341,9 +359,8 @@ describe('scheduler/scheduled regression', () => {
 
     await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
 
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    const notifyPromise = waitUntil.mock.calls[0]?.[0] as Promise<unknown>;
-    await expect(notifyPromise).resolves.toBeUndefined();
+    expect(waitUntil).toHaveBeenCalledTimes(2);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
 
     expect(dispatchWebhookToChannels).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -466,8 +483,8 @@ describe('scheduler/scheduled regression', () => {
     const expectedCheckedAt = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
 
     await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    await expect(waitUntil.mock.calls[0]?.[0] as Promise<unknown>).resolves.toBeUndefined();
+    expect(waitUntil).toHaveBeenCalledTimes(2);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
 
     expect(dispatchWebhookToChannels).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -584,7 +601,7 @@ describe('scheduler/scheduled regression', () => {
 
     await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
 
-    expect(waitUntil).toHaveBeenCalledTimes(2);
+    expect(waitUntil).toHaveBeenCalledTimes(3);
     await Promise.all(waitUntil.mock.calls.map((c) => c[0] as Promise<unknown>));
 
     expect(dispatchWebhookToChannels).toHaveBeenCalledWith(
